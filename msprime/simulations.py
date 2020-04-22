@@ -2355,6 +2355,262 @@ class DemographyDebugger:
             N_t[j] = N
         return N_t
 
+    def possible_lineages(self, samples=None):
+        """
+        Given the sampling configuration, this function determines when lineages are
+        possibly found within each population over epochs defined by demographic events
+        and sampling times. If no sampling configuration is given, we assume we sample
+        lineages from each population at time zero. The samples are specified by a list
+        of msprime Sample objects, so that possible ancient samples may be accounted for.
+
+        :param list samples: A list of msprime Sample objects, which specify their
+            populations and times.
+        :return: Returns a dictionary of times defining the epoch intervals with arrays
+            of length equal to the number of populations and containing 1s or 0s for
+            whether lineages could be found in that population.
+        """
+
+        def reachable_through_migration(mig_mat, epoch_lineages):
+            # get connected populations via migration
+            reachable = (
+                (
+                    np.linalg.matrix_power(
+                        np.eye(self.num_populations) + mig_mat, self.num_populations
+                    )
+                    > 0
+                )
+                * 1
+            ).T  # should this be transposed? check migration matrix direction
+            return (reachable.dot(epoch_lineages) > 0) * 1
+
+        # get configuration of sampling times from samples ({time:[pops_sampled_from]})
+        if samples is None:
+            sampling_times = {0: [i for i in range(self.num_populations)]}
+        else:
+            sampling_times = collections.defaultdict(list)
+            for sample in samples:
+                sampling_times[sample.time].append(sample.population)
+            for t in sampling_times.keys():
+                sampling_times[t] = list(set(sampling_times[t]))
+
+        # initial epoch and lineage placements
+        lineages = {
+            0: np.array(
+                [
+                    1 if i in sampling_times[0] else 0
+                    for i in range(self.num_populations)
+                ]
+            )
+        }
+
+        # Iterate through demographic events: mass migration with frac=1 turns off
+        # lineages in the source deme and turns on lineages in the dest deme, continuous
+        # migration turns on lineages in demes that are reachable, and changes in
+        # population sizes don't do anything (ignored)
+        # If we've jumped to the next epoch, we have to first check if there
+        # have been ancient samples in the previous epoch.
+        current_time = 0
+        current_epoch_num = 0
+        mig_mat = self.epochs[0].migration_matrix
+        for de in self.demographic_events:
+            if de.time > current_time:
+                # jump to next interval, but we first need to turn on lineages through
+                # migration, and then check if there have been ancient sampling events
+                # in the last epoch
+                lineages[current_time] = reachable_through_migration(
+                    mig_mat, lineages[current_time]
+                )
+                for t in sorted(sampling_times):
+                    if current_time < t <= de.time:
+                        lineages[t] = copy.copy(lineages[current_time])
+                        for deme in sampling_times[t]:
+                            lineages[t][deme] = 1
+                        current_time = t
+                        # ancient sampling could result in additional reachable demes
+                        lineages[current_time] = reachable_through_migration(
+                            mig_mat, lineages[current_time]
+                        )
+                # update migration matrix
+                current_epoch_num += 1
+                mig_mat = self.epochs[current_epoch_num].migration_matrix
+                lineages[de.time] = copy.copy(lineages[current_time])
+                current_time = de.time
+            if de.type == "mass_migration":
+                # turn on and off lineages due to mass migration events
+                # only turn on if source deme has lineages possible
+                last = max(lineages.keys())
+                if lineages[last][de.source] == 1:
+                    lineages[current_time][de.dest] = 1
+                    if de.proportion == 1:
+                        lineages[current_time][de.source] = 0
+
+        # finally, ensure that the final epoch accounts for migration
+        lineages[current_time] = reachable_through_migration(
+            mig_mat, lineages[current_time]
+        )
+
+        # combine epochs if there have not been changes in state
+        combined_lineages = {}
+        combined_lineages[0] = lineages[0]
+        for epoch_time in sorted(lineages.keys())[1:]:
+            last = max(combined_lineages.keys())
+            if np.any(lineages[epoch_time] != combined_lineages[last]):
+                combined_lineages[epoch_time] = lineages[epoch_time]
+
+        return combined_lineages
+
+    def calculate_lineage_probabilities(self, steps, sample_time=0):
+        """
+        Returns an array such that P[j, a, b] is the probability that a lineage that
+        started in population a at time sample_time is in population b at time steps[j]
+        ago.
+
+        This function reports sampling probabilities _before_ mass migration events
+        at a step time, if a mass migration event occurs at one of those times.
+        Migrations will then effect then next time step
+
+        :param list steps: A list of times to compute probabilities of lineages.
+        :param sample_time: The time of sampling of the lineage. For any times in steps
+            that are more recent than sample_time, the probability of finding the
+            lineage in any population is zero.
+        :return: An array of dimension len(steps) by num pops by num_pops.
+        """
+        num_pops = self.num_populations
+        # P[i, j] will be the probability that a lineage that started in i is now in j
+        P = np.zeros([num_pops, num_pops])
+
+        for ii in range(num_pops):
+            P[ii, ii] = 1
+
+        # epochs are defined by mass migration events or changes to population sizes
+        # or migration rates, so we add the epoch interval times to the steps that we
+        # need to account for
+        epoch_breaks = [t for t in self.epoch_times if t not in steps]
+        all_steps = np.concatenate([steps, epoch_breaks])
+
+        # add sample time if not in epoch_breaks
+        sampling = []
+        if sample_time not in all_steps:
+            sampling.append(sample_time)
+        all_steps = np.concatenate((all_steps, sampling))
+
+        ix = np.argsort(all_steps)
+        all_steps = all_steps[ix]
+        # keep track of the steps to report in P_out
+        keep_steps = np.concatenate(
+            [
+                np.repeat(True, len(steps)),
+                np.repeat(False, len(epoch_breaks)),
+                np.repeat(False, len(sampling)),
+            ]
+        )[ix]
+
+        assert len(np.unique(all_steps)) == len(all_steps)
+        assert np.all(steps == all_steps[keep_steps])
+        P_out = np.zeros((len(all_steps), num_pops, num_pops))
+
+        first_step = 0
+        while all_steps[first_step] < sample_time:
+            first_step += 1
+
+        P_out[first_step] = P
+
+        # get ordered mass migration events
+        mass_migration_objects = []
+        mass_migration_times = []
+        for demo in self.demographic_events:
+            if demo.type == "mass_migration":
+                mass_migration_objects.append(demo)
+                mass_migration_times.append(demo.time)
+
+        for jj in range(first_step, len(all_steps) - 1):
+            t_j = all_steps[jj]
+
+            # apply any mass migration events to P
+            # so if we sample at this time, we do no account for the instantaneous
+            # mass migration events that occur at the same time. that will show up
+            # at the next step
+            for mass_mig_t, mass_mig_e in zip(
+                mass_migration_times, mass_migration_objects
+            ):
+                if mass_mig_t == t_j:
+                    S = np.eye(num_pops, num_pops)
+                    S[mass_mig_e.source, mass_mig_e.dest] = mass_mig_e.proportion
+                    S[mass_mig_e.source, mass_mig_e.source] = 1 - mass_mig_e.proportion
+                    P = np.matmul(P, S)
+
+            # get continuous migration matrix over next interval
+            _, M = self._pop_size_and_migration_at_t(t_j)
+            dt = all_steps[jj + 1] - all_steps[jj]
+            dM = np.diag([sum(s) for s in M])
+            # advance to next interval time (dt) taking into account continuous mig
+            P = P.dot(_matrix_exponential(dt * (M - dM)))
+            P_out[jj + 1] = P
+
+        return P_out[keep_steps]
+
+    def indicators_from_probabilities(self, samples=None):
+        """
+        Given the sampling configuration, this function determines when lineages are
+        possibly found within each population over epochs defined by demographic events
+        and sampling times. If no sampling configuration is given, we assume we sample
+        lineages from each population at time zero. The samples are specified by a list
+        of msprime Sample objects, so that possible ancient samples may be accounted for.
+
+        Samples: A list of msprime Sample objects, which specify their
+            populations and times.
+        Returns a dictionary with epochs as keys, array of zeros and ones for possible
+            presence of lineages.
+        """
+        # get configuration of sampling times from samples ({time:[pops_sampled_from]})
+        if samples is None:
+            sampling_times = {0: [i for i in range(self.num_populations)]}
+        else:
+            sampling_times = collections.defaultdict(list)
+            for sample in samples:
+                sampling_times[sample.time].append(sample.population)
+            for t in sampling_times.keys():
+                sampling_times[t] = list(set(sampling_times[t]))
+
+        all_steps = sorted(
+            list(set([e.start_time for e in self.epochs] + list(sampling_times.keys())))
+        )
+
+        epochs = [(x, y) for x, y in zip(all_steps[:-1], all_steps[1:])]
+        epochs.append((all_steps[-1], np.inf))
+
+        # need to go a bit beyond last step and into the final epoch that extends to inf
+        all_steps.append(all_steps[-1] + 1)
+
+        indicators = {e: np.zeros(self.num_populations).astype(int) for e in epochs}
+        for sample_time, demes in sampling_times.items():
+            P_out = self.calculate_lineage_probabilities(
+                all_steps, sample_time=sample_time
+            )
+            for epoch, P in zip(epochs, P_out[1:]):
+                if epoch[1] <= sample_time:
+                    # samples shouldn't affect the epoch previous to the sampling time
+                    continue
+                for deme in demes:
+                    indicators[epoch][P[deme] > 0] = 1
+
+        # join epochs if adjacent epochs have same set of possible live populations
+        combined_indicators = {}
+        skip = 0
+        for ii, (epoch, inds) in enumerate(indicators.items()):
+            if skip > 0:
+                skip -= 1
+                continue
+            this_epoch = epoch
+            while ii + skip + 1 < len(epochs) and np.all(
+                indicators[epochs[ii + 1 + skip]] == inds
+            ):
+                this_epoch = (this_epoch[0], epochs[ii + 1 + skip][1])
+                skip += 1
+            combined_indicators[this_epoch] = inds
+
+        return combined_indicators
+
     def mean_coalescence_time(
         self, num_samples, min_pop_size=1, steps=None, rtol=0.005, max_iter=12
     ):

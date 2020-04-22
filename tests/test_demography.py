@@ -2797,3 +2797,255 @@ class TestCensusEvent(unittest.TestCase):
             demographic_events=[msprime.CensusEvent(time=2000)],
         )
         self.assertEqual(ts.tables.nodes, tsc.tables.nodes)
+
+
+class TestPossibleLineages(unittest.TestCase):
+    """
+    Tests for checking where lineages are possible within the demography debugger.
+    """
+
+    def test_possible_lineages_no_migration(self):
+        samples = [
+            msprime.Sample(time=0, population=0),
+            msprime.Sample(time=0, population=1),
+            msprime.Sample(time=0, population=2),
+            msprime.Sample(time=0, population=3),
+        ]
+        dem_events = [
+            msprime.MassMigration(time=50, source=3, destination=2),
+            msprime.MassMigration(time=100, source=2, destination=1),
+            msprime.MassMigration(time=150, source=1, destination=0),
+        ]
+        pop_config = [
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+        ]
+        dd = msprime.DemographyDebugger(
+            demographic_events=dem_events, population_configurations=pop_config
+        )
+        lineages = dd.possible_lineages(samples=samples)
+        self.assertTrue(len(lineages) == 4)
+        self.assertTrue(np.all(lineages[0] == [1, 1, 1, 1]))
+        self.assertTrue(np.all(lineages[50] == [1, 1, 1, 0]))
+        self.assertTrue(np.all(lineages[100] == [1, 1, 0, 0]))
+        self.assertTrue(np.all(lineages[150] == [1, 0, 0, 0]))
+
+        lineages2 = dd.indicators_from_probabilities(samples=samples)
+        self.assertTrue(len(lineages2) == 4)
+        self.assertTrue(np.all(lineages2[(0, 50)] == [1, 1, 1, 1]))
+        self.assertTrue(np.all(lineages2[(50, 100)] == [1, 1, 1, 0]))
+        self.assertTrue(np.all(lineages2[(100, 150)] == [1, 1, 0, 0]))
+        self.assertTrue(np.all(lineages2[(150, np.inf)] == [1, 0, 0, 0]))
+
+    def test_possible_lineages_with_migration(self):
+        # draw sample from one population, but others connection through migration
+        # even though there is a mass migration event, migration can bring lineages back
+        samples = [msprime.Sample(time=0, population=0)]
+        mig_mat = [[0, 0.1], [0.1, 0]]
+        dem_events = [msprime.MassMigration(time=50, source=1, destination=0)]
+        pop_config = [
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+        ]
+        dd = msprime.DemographyDebugger(
+            demographic_events=dem_events,
+            population_configurations=pop_config,
+            migration_matrix=mig_mat,
+        )
+        lineages = dd.possible_lineages(samples=samples)
+        self.assertTrue(len(lineages) == 1)
+        self.assertTrue(np.all(lineages[0] == [1, 1]))
+
+        lineages2 = dd.indicators_from_probabilities(samples=samples)
+        self.assertTrue(len(lineages2) == 1)
+        self.assertTrue(np.all(lineages2[(0, np.inf)] == [1, 1]))
+
+    def test_possible_lineages_ancient_samples(self):
+        samples = [
+            msprime.Sample(time=0, population=0),
+            msprime.Sample(time=0, population=1),
+            msprime.Sample(time=100, population=1),
+        ]
+        dem_events = [
+            msprime.MassMigration(time=50, source=1, destination=0),
+            msprime.MassMigration(time=150, source=1, destination=0),
+        ]
+        pop_config = [
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+        ]
+        dd = msprime.DemographyDebugger(
+            demographic_events=dem_events, population_configurations=pop_config
+        )
+        lineages = dd.possible_lineages(samples=samples)
+        self.assertTrue(len(lineages) == 4)
+        self.assertTrue(np.all(lineages[0] == [1, 1]))
+        self.assertTrue(np.all(lineages[50] == [1, 0]))
+        self.assertTrue(np.all(lineages[100] == [1, 1]))
+        self.assertTrue(np.all(lineages[150] == [1, 0]))
+
+        lineages2 = dd.indicators_from_probabilities(samples=samples)
+        self.assertTrue(len(lineages2) == 4)
+        self.assertTrue(np.all(lineages2[(0, 50)] == [1, 1]))
+        self.assertTrue(np.all(lineages2[(50, 100)] == [1, 0]))
+        self.assertTrue(np.all(lineages2[(100, 150)] == [1, 1]))
+        self.assertTrue(np.all(lineages2[(150, np.inf)] == [1, 0]))
+
+    def test_possible_lineages_complex_history(self):
+        samples = [
+            msprime.Sample(time=0, population=0),
+            msprime.Sample(time=0, population=2),
+            msprime.Sample(time=0, population=3),
+            msprime.Sample(time=500, population=4),
+        ]
+        mig_mat = [
+            [0, 0, 0, 0, 0],
+            [0, 0, 1e-5, 0, 0],
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0],
+        ]
+        dem_events = [
+            msprime.MassMigration(time=100, source=0, destination=1, proportion=0.1),
+            msprime.MassMigration(time=200, source=3, destination=2),
+            msprime.MigrationRateChange(time=200, rate=0),
+            msprime.MassMigration(time=300, source=1, destination=0),
+            msprime.MassMigration(time=400, source=2, destination=4, proportion=0.1),
+            msprime.MassMigration(time=600, source=2, destination=0),
+            msprime.MassMigration(time=700, source=4, destination=0),
+        ]
+        pop_config = [
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+        ]
+        dd = msprime.DemographyDebugger(
+            demographic_events=dem_events,
+            population_configurations=pop_config,
+            migration_matrix=mig_mat,
+        )
+        lineages = dd.possible_lineages(samples=samples)
+        self.assertTrue(len(lineages) == 7)
+        self.assertTrue(np.all(lineages[0] == [1, 0, 1, 1, 0]))
+        self.assertTrue(np.all(lineages[100] == [1, 1, 1, 1, 0]))
+        self.assertTrue(np.all(lineages[200] == [1, 1, 1, 0, 0]))
+        self.assertTrue(np.all(lineages[300] == [1, 0, 1, 0, 0]))
+        self.assertTrue(np.all(lineages[400] == [1, 0, 1, 0, 1]))
+        self.assertTrue(np.all(lineages[600] == [1, 0, 0, 0, 1]))
+        self.assertTrue(np.all(lineages[700] == [1, 0, 0, 0, 0]))
+
+        lineages2 = dd.indicators_from_probabilities(samples=samples)
+        self.assertTrue(len(lineages2) == 7)
+        self.assertTrue(np.all(lineages2[(0, 100)] == [1, 0, 1, 1, 0]))
+        self.assertTrue(np.all(lineages2[(100, 200)] == [1, 1, 1, 1, 0]))
+        self.assertTrue(np.all(lineages2[(200, 300)] == [1, 1, 1, 0, 0]))
+        self.assertTrue(np.all(lineages2[(300, 400)] == [1, 0, 1, 0, 0]))
+        self.assertTrue(np.all(lineages2[(400, 600)] == [1, 0, 1, 0, 1]))
+        self.assertTrue(np.all(lineages2[(600, 700)] == [1, 0, 0, 0, 1]))
+        self.assertTrue(np.all(lineages2[(700, np.inf)] == [1, 0, 0, 0, 0]))
+
+
+class TestLineageProbailities(unittest.TestCase):
+    """
+    Tests for checking where lineages are possible within the demography debugger.
+    """
+
+    def test_lineage_probabilities_tree(self):
+        dem_events = [
+            msprime.MassMigration(time=50, source=3, destination=2),
+            msprime.MassMigration(time=100, source=2, destination=1),
+            msprime.MassMigration(time=150, source=1, destination=0),
+        ]
+        pop_config = [
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+        ]
+        dd = msprime.DemographyDebugger(
+            demographic_events=dem_events, population_configurations=pop_config
+        )
+        P_out = dd.calculate_lineage_probabilities([10, 50, 60, 100, 101, 200])
+        self.assertTrue(np.all([np.sum(P) == len(pop_config) for P in P_out]))
+        self.assertTrue(np.all(np.diag(P_out[0]) == [1, 1, 1, 1]))
+        self.assertTrue(np.all(probs == [1, 0, 0, 0] for probs in P_out[5]))
+
+    def test_lineage_probabilities_pulse(self):
+        f_pulse = 0.3
+        dem_events = [
+            msprime.MassMigration(time=1, source=1, destination=0, proportion=f_pulse),
+        ]
+        pop_config = [
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+        ]
+        dd = msprime.DemographyDebugger(
+            demographic_events=dem_events, population_configurations=pop_config
+        )
+        P_out = dd.calculate_lineage_probabilities([2])
+        self.assertTrue(np.allclose(P_out[0], [[1, 0], [f_pulse, 1 - f_pulse]]))
+
+    def test_lineage_probabilities_continuous_migration(self):
+        mig_mat = [[0, 0.01], [0.01, 0]]
+        dem_events = [
+            msprime.MassMigration(time=100, source=1, destination=0, proportion=1),
+            msprime.MigrationRateChange(time=100, rate=0),
+        ]
+        pop_config = [
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+        ]
+        dd = msprime.DemographyDebugger(
+            demographic_events=dem_events,
+            population_configurations=pop_config,
+            migration_matrix=mig_mat,
+        )
+        P_out = dd.calculate_lineage_probabilities([0, 50, 100, 150])
+        self.assertTrue(np.all(P_out[0] == np.eye(len(pop_config))))
+        self.assertTrue(np.all(P_out[1] > 0))
+        self.assertTrue(np.all(P_out[1] > 0))
+        # checking if close because of precision of _matrix_exponential function
+        self.assertTrue(np.all(np.isclose(P_out[3], [[1, 0], [1, 0]])))
+
+        mig_mat = [[0, 0.01], [0, 0]]
+        dd = msprime.DemographyDebugger(
+            demographic_events=dem_events,
+            population_configurations=pop_config,
+            migration_matrix=mig_mat,
+        )
+        P_out = dd.calculate_lineage_probabilities([0, 50, 100, 150])
+        self.assertTrue(np.all(P_out[0] == np.eye(len(pop_config))))
+        self.assertTrue(abs(P_out[1][1][0]) < np.finfo(float).eps)
+        self.assertTrue(abs(P_out[2][1][0]) < np.finfo(float).eps)
+        # machine precision instead of zero because of _matrix_exponential function
+        self.assertTrue(np.all(np.isclose(P_out[3], [[1, 0], [1, 0]])))
+
+    def test_sampling_time(self):
+        mig_mat = [[0, 0.01], [0.02, 0]]
+        dem_events = [
+            msprime.MassMigration(time=100, source=1, destination=0, proportion=1),
+            msprime.MigrationRateChange(time=100, rate=0),
+        ]
+        pop_config = [
+            msprime.PopulationConfiguration(initial_size=100),
+            msprime.PopulationConfiguration(initial_size=100),
+        ]
+        dd = msprime.DemographyDebugger(
+            demographic_events=dem_events,
+            population_configurations=pop_config,
+            migration_matrix=mig_mat,
+        )
+        P_out = dd.calculate_lineage_probabilities([0], sample_time=1)
+        self.assertTrue(np.all(P_out[0] == 0))
+        P_out = dd.calculate_lineage_probabilities([0, 1, 2], sample_time=1)
+        self.assertTrue(np.all(P_out[0] == 0))
+        self.assertTrue(np.all(P_out[1] == [[1, 0], [0, 1]]))
+        self.assertTrue(np.allclose(np.sum(P_out[2], axis=1), 1))
+        P_out = dd.calculate_lineage_probabilities([99, 100, 101], sample_time=1)
+        self.assertTrue(np.all(P_out[0] > 0))
+        self.assertTrue(np.all(P_out[1] > 0))
+        self.assertTrue(np.allclose(P_out[2], [[1, 0], [1, 0]]))
