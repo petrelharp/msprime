@@ -29,10 +29,10 @@ from unittest import mock
 
 import numpy as np
 import scipy.linalg
-import tskit
 
 import _msprime
 import msprime
+import tskit
 
 
 class TestTimeTravelErrors(unittest.TestCase):
@@ -2949,10 +2949,75 @@ class TestPossibleLineages(unittest.TestCase):
         self.assertTrue(np.all(lineages2[(700, np.inf)] == [1, 0, 0, 0, 0]))
 
 
-class TestLineageProbailities(unittest.TestCase):
+class TestLineageProbabilities(unittest.TestCase):
     """
     Tests for checking where lineages are possible within the demography debugger.
     """
+
+    def two_pop_example(self, a, b):
+        # Just migration between two populations:
+        #  the transition probability matrix for the lineage random walk is:
+        def f(t):
+            return np.array(
+                [
+                    [
+                        np.exp(-(a + b) * t) + (1 - np.exp(-(a + b) * t)) * b / (a + b),
+                        (1 - np.exp(-(a + b) * t)) * a / (a + b),
+                    ],
+                    [
+                        (1 - np.exp(-(a + b) * t)) * b / (a + b),
+                        np.exp(-(a + b) * t) + (1 - np.exp(-(a + b) * t)) * a / (a + b),
+                    ],
+                ]
+            )
+
+        dd = msprime.DemographyDebugger(
+            population_configurations=[
+                msprime.PopulationConfiguration(initial_size=1),
+                msprime.PopulationConfiguration(initial_size=1),
+            ],
+            migration_matrix=[[0, a], [b, 0]],
+        )
+        return dd, f
+
+    def verify_simulation(self, dd):
+        samples = [
+            msprime.Sample(pop, time)
+            for pop in range(dd.num_populations)
+            for time in dd.epoch_times
+        ]
+        reps = msprime.simulate(
+            samples=samples,
+            population_configurations=dd.population_configurations,
+            migration_matrix=dd.migration_matrix,
+            demographic_events=dd.demographic_events,
+            end_time=max(dd.epoch_times + 1),
+            num_replicates=100,
+        )
+        for ts in reps:
+            t = ts.first()
+            for u in ts.samples():
+                p = u
+                lineage = []
+                while p != tskit.NULL:
+                    lineage.append(ts.node(p))
+                    p = t.parent(p)
+                probs = dd.calculate_lineage_probabilities(
+                    [n.time for n in lineage], sample_time=lineage[0].time
+                )
+                pop = lineage[0].population
+                for j, n in enumerate(lineage):
+                    self.assertGreater(probs[j, pop, n.population], 0.0)
+
+    def test_two_pop(self):
+        for b in [2, 0]:
+            dd, f = self.two_pop_example(1, 2)
+            times = np.linspace(0, 10, 21)
+            for st in [0.0, 2.5]:
+                P = dd.calculate_lineage_probabilities(times + st, sample_time=st)
+                for j, t in enumerate(times):
+                    self.assertTrue(np.allclose(P[j, :, :], f(t)))
+            self.verify_simulation(dd)
 
     def test_lineage_probabilities_tree(self):
         dem_events = [
@@ -2973,6 +3038,7 @@ class TestLineageProbailities(unittest.TestCase):
         self.assertTrue(np.all([np.sum(P) == len(pop_config) for P in P_out]))
         self.assertTrue(np.all(np.diag(P_out[0]) == [1, 1, 1, 1]))
         self.assertTrue(np.all(probs == [1, 0, 0, 0] for probs in P_out[5]))
+        self.verify_simulation(dd)
 
     def test_lineage_probabilities_pulse(self):
         f_pulse = 0.3
@@ -2988,6 +3054,7 @@ class TestLineageProbailities(unittest.TestCase):
         )
         P_out = dd.calculate_lineage_probabilities([2])
         self.assertTrue(np.allclose(P_out[0], [[1, 0], [f_pulse, 1 - f_pulse]]))
+        self.verify_simulation(dd)
 
     def test_lineage_probabilities_continuous_migration(self):
         mig_mat = [[0, 0.01], [0.01, 0]]
@@ -3010,6 +3077,7 @@ class TestLineageProbailities(unittest.TestCase):
         self.assertTrue(np.all(P_out[1] > 0))
         # checking if close because of precision of _matrix_exponential function
         self.assertTrue(np.all(np.isclose(P_out[3], [[1, 0], [1, 0]])))
+        self.verify_simulation(dd)
 
         mig_mat = [[0, 0.01], [0, 0]]
         dd = msprime.DemographyDebugger(
@@ -3023,6 +3091,7 @@ class TestLineageProbailities(unittest.TestCase):
         self.assertTrue(abs(P_out[2][1][0]) < np.finfo(float).eps)
         # machine precision instead of zero because of _matrix_exponential function
         self.assertTrue(np.all(np.isclose(P_out[3], [[1, 0], [1, 0]])))
+        self.verify_simulation(dd)
 
     def test_sampling_time(self):
         mig_mat = [[0, 0.01], [0.02, 0]]
@@ -3049,3 +3118,4 @@ class TestLineageProbailities(unittest.TestCase):
         self.assertTrue(np.all(P_out[0] > 0))
         self.assertTrue(np.all(P_out[1] > 0))
         self.assertTrue(np.allclose(P_out[2], [[1, 0], [1, 0]]))
+        self.verify_simulation(dd)

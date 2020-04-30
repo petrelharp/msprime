@@ -32,9 +32,9 @@ import sys
 import warnings
 
 import numpy as np
-import tskit
 
 import _msprime
+import tskit
 from . import mutations
 from . import provenance
 from . import utils
@@ -2214,6 +2214,8 @@ class DemographyDebugger:
                 population_configurations, saved_sample_sizes
             ):
                 pop_config.sample_size = sample_size
+        self.migration_matrix = migration_matrix
+        self.population_configurations = population_configurations
 
     def _make_epochs(self, simulator, demographic_events):
         self.epochs = []
