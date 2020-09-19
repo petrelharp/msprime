@@ -1178,7 +1178,7 @@ class TestMutationStatistics(unittest.TestCase, StatisticalTestMixin):
 
 
 @attr.s
-class SlimMetadata:
+class SLiMMetadata:
     mutation_type_id = attr.ib()
     selection_coeff = attr.ib()
     subpop_index = attr.ib()
@@ -1186,7 +1186,7 @@ class SlimMetadata:
     nucleotide = attr.ib()
 
 
-class TestSlimMutationModel(unittest.TestCase):
+class TestSLiMMutationModel(unittest.TestCase):
     """
     Tests for the SLiM mutation generator.
     """
@@ -1199,7 +1199,7 @@ class TestSlimMutationModel(unittest.TestCase):
         ret = []
         for j in range(len(metadata) // md_size):
             unpacked = struct.unpack(fmt, metadata[j * md_size : (j + 1) * md_size])
-            ret.append(SlimMetadata(*unpacked))
+            ret.append(SLiMMetadata(*unpacked))
         return ret
 
     def validate_slim_mutations(self, ts, mutation_type=0):
@@ -1229,13 +1229,13 @@ class TestSlimMutationModel(unittest.TestCase):
 
     def run_mutate(self, ts, rate=1, random_seed=42, mutation_type=0, mutation_id=0):
 
-        model = msprime.SlimMutationModel(type=mutation_type, next_id=mutation_id)
+        model = msprime.SLiMMutationModel(type=mutation_type, next_id=mutation_id)
         mts1 = msprime.mutate(
             ts, rate=rate, random_seed=random_seed, model=model, discrete=True
         )
         self.assertEqual(mts1.num_mutations, model.next_id)
 
-        model = PythonSlimMutationModel(
+        model = PythonSLiMMutationModel(
             mutation_type=mutation_type, next_id=mutation_id
         )
         mts2 = py_mutate(
@@ -1586,7 +1586,7 @@ class PythonMutationModel:
 
 
 @attr.s
-class PythonSlimMutationModel(PythonMutationModel):
+class PythonSLiMMutationModel(PythonMutationModel):
     mutation_type = attr.ib(default=0)
     next_id = attr.ib(default=0)
 

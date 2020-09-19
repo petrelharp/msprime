@@ -91,7 +91,7 @@ class MatrixMutationModel(_msprime.MatrixMutationModel):
         return s
 
 
-class SlimMutationModel(_msprime.SlimMutationModel):
+class SLiMMutationModel(_msprime.SLiMMutationModel):
     asdict = safe_asdict
 
 
