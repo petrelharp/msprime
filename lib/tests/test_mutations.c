@@ -840,7 +840,8 @@ verify_slim_mutation_ids(int64_t *mut_ids, size_t mut_ids_length, int64_t min_mu
 }
 
 static void
-verify_slim_metadata(char *metadata, size_t metadata_length)
+verify_slim_metadata(char *metadata, size_t metadata_length,
+        int32_t slim_time)
 {
     size_t n;
     int32_t *mutation_type_id_;
@@ -862,7 +863,7 @@ verify_slim_metadata(char *metadata, size_t metadata_length)
     CU_ASSERT_EQUAL_FATAL(*subpop_index_, TSK_NULL);
     n += sizeof(int32_t);
     origin_generation_ = (int32_t *) (metadata + n);
-    CU_ASSERT_EQUAL_FATAL(*origin_generation_, 0.0);
+    CU_ASSERT_EQUAL_FATAL(*origin_generation_, slim_time);
     n += sizeof(int32_t);
     nucleotide_ = (int8_t *) (metadata + n);
     CU_ASSERT_EQUAL_FATAL(*nucleotide_, -1);
@@ -882,9 +883,12 @@ test_mutgen_slim_mutations(void)
     int64_t mut_id, *all_mut_ids;
     int32_t mutation_type_id = 10;
     int64_t next_mutation_id = 23;
+    int32_t slim_generation = 17;
 
     CU_ASSERT_FATAL(rng != NULL);
-    ret = slim_mutation_model_alloc(&mut_model, mutation_type_id, next_mutation_id, 0);
+    ret = slim_mutation_model_alloc(
+            &mut_model, mutation_type_id,
+            next_mutation_id, slim_generation, 0);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
 
     ret = tsk_table_collection_init(&tables, 0);
@@ -950,7 +954,7 @@ test_mutgen_slim_mutations(void)
         verify_slim_metadata(
             tables.mutations.metadata + tables.mutations.metadata_offset[j] + parent_len,
             tables.mutations.metadata_offset[j + 1] - tables.mutations.metadata_offset[j]
-                - parent_len);
+                - parent_len, slim_generation - (int32_t) tables.mutations.time[j]);
     }
 
     mutgen_print_state(&mutgen, _devnull);
@@ -980,7 +984,7 @@ test_mutgen_slim_mutation_large_values(void)
     insert_single_tree(&tables, -1);
 
     /* Trying to generate mutations that overflow raises an error */
-    ret = slim_mutation_model_alloc(&mut_model, 0, INT64_MAX, 0);
+    ret = slim_mutation_model_alloc(&mut_model, 0, INT64_MAX, 1, 0);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = mutgen_alloc(&mutgen, rng, &tables, &mut_model, 0);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
@@ -995,7 +999,7 @@ test_mutgen_slim_mutation_large_values(void)
     tsk_site_table_clear(&tables.sites);
     /* Try out with a large value that doesn't hit the ceiling */
     next_mutation_id = INT64_MAX - 100;
-    ret = slim_mutation_model_alloc(&mut_model, 0, next_mutation_id, 0);
+    ret = slim_mutation_model_alloc(&mut_model, 0, next_mutation_id, 1, 0);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = mutgen_alloc(&mutgen, rng, &tables, &mut_model, 0);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
@@ -1232,15 +1236,16 @@ test_slim_mutation_model_errors(void)
     mutation_model_t model;
     int32_t mutation_type_id = 0;
     int64_t next_mutation_id = 0;
+    int32_t slim_generation = 1;
 
     next_mutation_id--;
-    ret = slim_mutation_model_alloc(&model, mutation_type_id, next_mutation_id, 0);
+    ret = slim_mutation_model_alloc(&model, mutation_type_id, next_mutation_id, slim_generation, 0);
     CU_ASSERT_EQUAL_FATAL(ret, MSP_ERR_BAD_SLIM_PARAMETERS);
     mutation_model_free(&model);
 
     mutation_type_id--;
     next_mutation_id++;
-    ret = slim_mutation_model_alloc(&model, mutation_type_id, next_mutation_id, 0);
+    ret = slim_mutation_model_alloc(&model, mutation_type_id, next_mutation_id, slim_generation, 0);
     CU_ASSERT_EQUAL_FATAL(ret, MSP_ERR_BAD_SLIM_PARAMETERS);
     mutation_model_free(&model);
 }
@@ -1252,9 +1257,11 @@ test_slim_mutation_model_properties(void)
     mutation_model_t model;
     int32_t mutation_type_id = 1;
     int64_t next_mutation_id = 2;
+    int32_t slim_generation = 3;
 
-    ret = slim_mutation_model_alloc(&model, mutation_type_id, next_mutation_id, 0);
+    ret = slim_mutation_model_alloc(&model, mutation_type_id, next_mutation_id, slim_generation, 0);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
+    CU_ASSERT_EQUAL_FATAL(model.params.slim_mutator.slim_generation, 3);
     CU_ASSERT_EQUAL_FATAL(model.params.slim_mutator.next_mutation_id, 2);
     CU_ASSERT_EQUAL_FATAL(model.params.slim_mutator.mutation_type_id, 1);
 
